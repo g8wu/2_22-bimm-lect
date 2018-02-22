@@ -1,0 +1,205 @@
+---
+title: "2_22 Bimm Lect"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#2_22 Bimm 143 Lect
+
+Install and load DESeq2
+
+```{r}
+source("http://bioconductor.org/biocLite.R")
+biocLite()
+biocLite("DESeq2")
+```
+
+Import countData and colData into R
+```{r}
+metadata <- read.csv("airway_metadata.csv", stringsAsFactors = FALSE)
+counts <- read.csv("airway_scaledcounts.csv", stringsAsFactors = FALSE)
+```
+Take a look at each with head() or just View()
+```{r}
+View(counts)
+View(metadata)
+```
+
+##Toy differential gene expression
+For demonstration purposes...
+```{r}
+control <- metadata[metadata[,"dex"]=="control",]
+
+
+control.mean <- rowSums(counts[,control$id])/4
+names(control.mean) <- counts$ensgene
+
+treated <- metadata[metadata[,"dex"]=="treated",]
+treated.mean <- rowSums(counts[,treated$id])/4
+names(treated.mean) <- counts$ensgene
+View(control)
+```
+We will combine our meancount data for bookkeeping purposes
+```{r}
+meancounts <- data.frame(control.mean, treated.mean)
+#check your work
+colSums(meancounts)
+```
+Now to plot using plot.default
+```{r}
+plot(meancounts)
+meancounts$log2fc <- log2(meancounts[,"treated.mean"]/meancounts[,"control.mean"])
+head(meancounts)
+
+```
+
+
+
+```{r}
+zero.vals <- which(meancounts[,1:2]==0, arr.ind=TRUE)
+
+to.rm <- unique(zero.vals[,1])
+mycounts <- meancounts[-to.rm,]
+head(mycounts)
+```
+
+A common threshold used for calling something differentially expressed is a log2(FoldChange) of greater than 2 or less than -2. Let's filter the dataset both ways to see how many genes are up or down-regulated
+```{r}
+up.ind <- mycounts$log2fc > 2
+down.ind <- mycounts$log2fc < (-2)
+sum(up.ind) #number of up-regulated
+sum(down.ind)  #number of down-regulated
+```
+
+##Adding annotation data
+Our result table mycounts so far only contains ENsembl gene IDs. We need alt names and extra annotation for interpretation.
+
+Add annotation using annotation table from a supplied csv file from ENSEMBLE or UCSC.
+```{r}
+anno <- read.csv("annotables_grch38.csv", stringsAsFactors = FALSE)
+head(anno)
+```
+Now we should map (or merge) this table with our mycounts data.
+Check the merge() documentation to format.
+```{r}
+mycounts.anno <- merge(mycounts, anno, by.x="row.names", by.y = "ensgene")
+head(mycounts.anno)
+```
+
+In cases where you don't have a preferred annotation file at hand, you can use the Bioconductor packages for annotation.
+*install using biocLite("AnnotationDbi") for both packages, do not use install.packages()*
+```{r}
+#
+library("AnnotationDbi")
+
+# organism annotation package "org"
+# for Homo sapiens "Hs"
+library("org.Hs.eg.db")
+
+columns(org.Hs.eg.db)
+```
+
+Use mapIds() to add single columns to mycounts table. 
+```{r}
+mycounts$symbol <- mapIds(org.Hs.eg.db,
+                     keys=row.names(mycounts),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+
+#repeat for Entrex and Uniprot annotations?
+mycounts$entrez <- mapIds(org.Hs.eg.db,
+                        keys = row.names(mycounts), 
+                        column = "ENTREZ", 
+                        keytype = "ENTREZID",
+                        multiVals = "first")
+mycounts$uniprot <- mapIds(org.Hs.eg.db,
+                        keys = row.names(mycounts), 
+                        column = "SYMBOL", 
+                        keytype = "UNIPROT",
+                        multiVals = "first")
+
+
+head(mycounts[up.ind,])
+```
+
+##DESeq2 analysis
+load libraries
+```{r}
+library(DESeq2)
+citation("DESeq2")
+```
+
+###Importing data
+Use DESeqDataSetFromatrix() to build dds object.
+```{r}
+dds <- DESeqDataSetFromMatrix(countData=counts, 
+                              colData=metadata, 
+                              design=~dex, 
+                              tidy=TRUE)
+dds
+```
+###DESq pipeline
+sizeFactors(dds), dispersions(dds), results(dds) all reaturn NULL. So initialize.
+```{r}
+dds <- DESeq(dds)
+
+# get results
+res <- results(dds)
+res
+
+res05 <- results(dds, alpha=0.05)
+summary(res)
+
+#reorder table by smallest p value
+resOrdered <- res[order(res$pvalue),]
+
+resSig05 <- subset(as.data.frame(res), padj < 0.05)
+nrow(resSig05)
+resSig01 <- subset(as.data.frame(res), padj < 0.01)
+nrow(resSig01)
+
+ord <- order (resSig01$padj)
+#View (res01[ord,])
+head(resSig01[ord,])
+```
+```{r}
+resSig01$symbol <- mapIds(org.Hs.eg.db,
+                     keys=row.names(resSig01),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+head(resSig01)
+```
+
+write out sigfigs with annotations
+```{r}
+write.csv(resSig01[ord,], "signif01_results.csv")
+View(resSig01)
+```
+
+###Data Visualization
+Use DESeq2 function plotCounts()
+```{r}
+i <- grep("CRISPLD2", resSig01$symbol)
+resSig01[i,]
+
+```
+
+Now let's plot some:
+```{r}
+# this only returns the data, does not plot the numbers
+plotCounts(dds, gene="ENSG00000103196", intgroup="dex")
+
+# Return the data
+d <- plotCounts(dds, gene="ENSG00000103196", intgroup="dex", returnData=TRUE)
+head(d)
+
+boxplot(count ~ dex , data=d)
+```
+
+
